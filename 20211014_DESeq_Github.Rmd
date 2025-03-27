@@ -1,0 +1,713 @@
+---
+title: "DESeq2 RNA-seq Analysis Template"
+author: "Stefanie Herresthal, Nico Reusch, Jonas Schulte-Schrepping, Deniz Nasz, Lisa Holsten"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+---
+
+# 1. R requirements
+
+## 1.1 Install and load packages
+
+First, we install all necessary CRAN and Bioconductor packages and load them into the R session.
+
+### Install CRAN
+```{r}
+# CRAN packages
+list.of.packages <- c("apeglm", 
+                      "factoextra",
+                      "ggbeeswarm",
+                      "ggplot2",
+                      "ggrepel",
+                      "gplots",
+                      "hexbin",
+                      "Hmisc",
+                      "openxlsx",
+                      "patchwork",
+                      "plotly",
+                      "reshape2",
+                      "scales",
+                      "tidyr",
+                      "VennDiagram")
+
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)>0) install.packages(new.packages)
+```
+
+
+### Install BioConductor
+
+```{r}
+# BioconductoR packages
+list.of.bioc.packages <- c("biomaRt",
+                           "clusterProfiler",
+                           "ComplexHeatmap",
+                           "DESeq2",
+                           "DOSE",
+                           "genefilter",
+                           "ggpubr",
+                           "GSEABase",
+                           "GSVA",
+                           "IHW",
+                           "limma",
+                           "org.Mm.eg.db",
+                           "org.Hs.eg.db", 
+                           "pheatmap",
+                           "RColorBrewer",
+                           "rhdf5",
+                           "sva",
+                           "tximport",
+                           "vsn")
+
+new.packages.bioc <- list.of.bioc.packages[!(list.of.bioc.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages.bioc)>0) if (!requireNamespace("BiocManager")) install.packages("BiocManager")
+BiocManager::install(new.packages.bioc, update = FALSE)
+```
+
+
+### Load Packages
+
+```{r load packages, results='hide',message=FALSE,warning=FALSE}
+lapply(c(list.of.packages,list.of.bioc.packages), require, character.only = TRUE)
+```
+
+```{r}
+rm(list.of.packages,list.of.bioc.packages, new.packages, new.packages.bioc)
+```
+
+
+## 1.2 Load functions
+
+We define functions used for analysis and visualization of our data, which are collected in the DESey_functions.Rmd file. 
+Most of our plots are based on ggplot2, so you can add different themes our change scales, etc. 
+Example:
+DEcompare$KEGGplot+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  
+```{r}
+source(file = "20211014_DESeq_functions.R")
+```
+
+
+# 2. Project information
+
+*Please specify important information on the data set.*
+
+* Scientific question: 
+
+* IDs: 
+* Samples: 
+* Conditions:
+* Species:
+* Cell type(s):
+
+* RNA-isolation: 
+* Library-Production: 
+* Sequencing method:
+* Sequencing run(s): 
+* Alignment: 
+* QC: 
+
+* Project directories on Illumina: 
+* Project directory on blades: 
+
+**Workflow Summary:**
+
+*Space for notes concerning the global workflow and quality checks.*
+
+## Set project directory 
+
+**Obligatory structure of your directory:**
+
+The project directory needs to contain a folder */Data*, which contains: 
+
+1) Depending on the aligner used you need to include one of the following output folders:
+
+  The output folder of the bulk RNAseq Kallisto pipeline including the folders *kallisto* and *qc* 
+  * The kallisto output files should be in: *Data/output/kallisto/kallisto/*
+  * The Quality Control files should be in: 
+      *Data/output/kallisto/mutiqc/multiqc_data/multiqc_kallisto.txt* and 
+      *Data/output/qc/multiqc/multiqc_data/multiqc_fastqc.txt*. 
+      
+  The output folder of the bulk RNAseq STAR pipeline including:
+  * Either the *STAR* output files in: *Data/output/counts/* or *Data/output/all_samples.tsv*
+  * The Quality Control files should be in: 
+      *Data/output/qc/multiqc-star_data/multiqc_star.txt* and 
+      *Data/output/qc/multiqc-star_data/multiqc_fastqc.txt*. 
+
+2) A sample table:  *sample_table.txt*, which should contain *at least* the following columns with respective column names: 
+  * Sample Identifier (e.g. 3609): **"ID"**
+  * Sample Name (e.g. wt_8mo_5870): **"sample_name"**
+  * Condition (e.g. wt_8mo): **"condition"**   --> merged sample information that is used for DE calling 
+  * Donor information (e.g. wt_5870): **"donor"**
+  * Optional additional information: gender, age, date of experiment, ... 
+
+3) A gene annotation file (produced from the gtf file used for buildig the kallisto/STAR index).
+  * mouse: ID2SYMBOL_gencode_vM*X*_transcript.txt
+  * human: ID2SYMBOL_gencode_v*X*_transcript.txt
+
+4) A folder *GMTfiles* containing gene set annotation, incl. GO, KEGG, and the MSigDB (http://software.broadinstitute.org/gsea/msigdb) data sets: hallmark, motif and immunological gene sets
+
+*ATTENTION:* The gene annotation files as well as the GMT files for human and mouse can be downloaded here: 
+https://uni-bonn.sciebo.de/s/MizDdMdLYmFh7QX
+
+
+**Specify the organism of the data set**
+
+```{r}
+organism = "human" # choose "mouse" or "human"
+```
+
+
+**Specify the project directory here:**
+
+```{r, warning=F}
+
+dir <- setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+
+
+# creating output directories (if not already existing):
+dir.create(file.path(dir, paste0("Analysis_", Sys.Date()), "Tables"), recursive = T)
+dir.create(file.path(dir, paste0("Analysis_", Sys.Date()), "Plots"), recursive = T)
+
+# save for later
+dir_out <- paste0(dir, "/Analysis_", Sys.Date(), "/")
+```
+
+
+**Specify your aligner**
+```{r}
+aligner = "STAR" #choose "STAR" or "kallisto"
+```
+
+
+# 3. Data Import
+
+## 3.1 Load gene annotation
+
+This gene annotation file will be used 
+  1) to map the Ensembl transcript IDs to Ensembl gene IDs during the tximport function and 
+  2) annotate the Ensembl IDs with additional information such as gene symbol or type.
+  
+For consistency, this file should have been produced from the .gtf file used for building the kallisto/STAR index. 
+For Kallisto alignment it needs to consist of four columns: Gene ENSEMBL ID, Transcript ID, Gene Symbol, Gene Type.
+For STAR alignment it needs to consist of three columns: Gene ENSEMBL ID, Gene Symbol, Gene Type.
+
+```{r gene annotation import}
+# Specify the filename of your gene annotation file here: 
+annotation_filename <- "ID2SYMBOL_gencode_v33.txt"
+
+tx_annotation <- read.delim(file.path(dir, "reference_files", annotation_filename),
+                            header = F , 
+                            stringsAsFactors = F,
+                            # col.names = c("GENEID", "TXNAME", "SYMBOL", "GENETYPE") # Kallisto
+                            col.names = c("GENEID", "SYMBOL", "GENETYPE")             # STAR
+                            )
+```
+
+
+## 3.2 Load gene set annotation
+Change the file names to the names of your corresponding files in the GMTfiles folder.
+
+```{r}
+# file names
+TF_list           = "20180317_TFlist_human_Lambert_Cell2018.csv"
+GO                = "GO_hg38p12_ensembl181121.txt"
+KEGG              = "KEGG_hg38_clusterProfiler_210602.txt"
+Hallmark          = "h.all.v7.4.entrez.gmt"
+cannonicalPathway = "c2.cp.v7.4.entrez.gmt"
+immunoSignature   = "c7.all.v7.4.entrez.gmt"
+motif             = "c3.all.v7.4.entrez.gmt"
+```
+
+
+## 3.3 Load sample table
+
+Now, we read a table containing all available meta information for the samples. This table needs to be prepared beforehand from information on the sequencing tracker or provided by the experimental partners.
+
+```{r sample table import}
+sample_table <- read.delim(file.path(dir, "anno_paper.txt"))
+rownames(sample_table) <- sample_table$ID
+sample_table$condition <- sample_table$tissue_deep
+
+# double-check your sample_table includes all necessary information
+c("ID", "condition") %in% colnames(sample_table) 
+sample_table
+```
+
+### Format sample table
+
+For the correct order of the samples in later plots, we define the column of our sample table that contains the information of interest and reorder its factor levels.
+
+```{r colour definitions}
+
+plot_order <- c("condition")
+```
+
+
+### Colour scheme customization
+
+Define you colour schemes according to your data set and your variables!
+For hex colors use: https://www.color-hex.com
+
+```{r run emi-s}
+col_condition <- c("green", "orange", "red")
+names(col_condition) <- c("Duo", "Duo_normal", "Duo_polyp")
+ann_colors <- list(condition = col_condition)
+```
+
+
+# 4. Import of count files
+
+## 4.1. TXimport for Kallisto-aligned data (proceed to 4.2 for STAR aligned data)
+
+A new and recommended pipeline for RNA-seq analysis is to use fast transcript abundance quantifiers, such as kallisto or Salmon, upstream of DESeq2, and then to create gene-level count matrices for use with DESeq2 by importing the quantification data using the tximport package.
+
+We use tximport and DESeq2 based on the gene-level estimated counts from Kallisto (Bray, Pimentel, Melsted, Pachter 2016). 
+
+Some advantages of using this methods for transcript abundance estimation are: 
+
+  * this approach corrects for potential changes in gene length across samples (e.g. from differential isoform usage) (Trapnell et al. 2013), 
+  * some of these methods (Salmon, Sailfish, kallisto) are substantially faster and require less memory and disk usage compared to alignment-based methods that require creation and storage of BAM files, and,
+  * it is possible to avoid discarding those fragments that can align to multiple genes with homologous sequence, thus increasing sensitivity (Robert and Watson 2015).
+
+Full details on the motivation and methods for importing transcript level abundance and count estimates, summarizing to gene-level count matrices and producing an offset which corrects for potential changes in average transcript length across samples are described in (Soneson, Love, and Robinson 2015). Note that the tximport-to-DESeq2 approach uses estimated gene counts from the transcript abundance quantifiers, but not normalized counts.
+
+TXimport imports transcript-level abundance, estimated counts and transcript lengths, and summarizes these into matrices for use with downstream statistical analysis packages such as edgeR, DESeq2, limma-voom. 
+Average transcript length, weighted by sample-specific transcript abundance estimates, is provided 
+as a matrix, which is then used as an offset for different expression of gene-level counts.
+
+
+### Option 1
+```{r}
+star.count <- read.table(file = file.path(dir, "star_count.txt"), row.names = 1, header = T, stringsAsFactors = F,check.names = F )
+star.count <- star.count[, colnames(star.count) %in% sample_table$ID]
+```
+
+
+
+# 5. Building the DESeqDataSet
+
+## 5.1 Generate DESeq object
+
+The object class used by the DESeq2 package to store the read counts and the intermediate estimated quantities during statistical analysis is the DESeqDataSet, which will usually be represented in the code here as an object called "dds". 
+
+A DESeqDataSet object must have an associated design formula. The design formula expresses the variables which will be used in modeling. The formula should be a tilde (~) followed by the variables with plus signs between them (it will be coerced into a formula if it is not already). The design can be changed later, however then all differential analysis steps should be repeated, as the design formula is used to estimate the dispersions and to estimate the log2 fold changes of the model.
+
+
+
+For STAR-aligned data:
+Ensure that the order of the sample_table matches the order of the count matrix
+```{r}
+identical(rownames(sample_table), colnames(star.count))
+
+# Reorder the columns of the count matrix if necessary
+star.count <- star.count[ , match(colnames(star.count), rownames(sample_table))]
+```
+
+```{r DESeqDataSetFromMatrix}
+dds_txi <- DESeqDataSetFromMatrix(countData = star.count,  
+                                  colData = sample_table, 
+                                  design = ~ condition)
+
+
+```
+
+
+## 5.2 Pre-filtering
+
+While it is not necessary to pre-filter low count genes before running the DESeq2 functions, there are two reasons which make pre-filtering useful: 
+  * by removing rows in which there are very few reads, we reduce the memory size of the dds data object, and 
+  * we increase the speed of the transformation and testing functions within DESeq2. 
+
+Here, we perform a minimal pre-filtering to keep only rows that have at least 10 reads total. 
+
+*Note that more strict filtering to increase power is automatically applied via independent filtering or independent hypothesis weighting on the mean of normalized counts within the results function.*
+
+```{r pre-filtering}
+
+genes_to_keep <- rowSums(counts(dds_txi) >= 10) >= table(sample_table$condition) %>% min() & rownames(counts(dds_txi)) %in% tx_annotation[grep("protein_coding", tx_annotation$GENETYPE),1]& rownames(counts(dds_txi)) %in% tx_annotation[grep("^HBA|^HBB|^HBD|HBE1|HBE2|^HBG|^HBM|^RPS|^RPL|MT-", tx_annotation$SYMBOL, invert=T),1]
+
+table(genes_to_keep)
+dds <- dds_txi[genes_to_keep,]
+```
+
+**Number of genes after filtering is:** `r sum(genes_to_keep) `
+
+
+## 5.3 DESeq calculations
+
+**DESeq2:** Estimate variance-mean dependence (2) in count data from high-throughput sequencing assays and test for differential expression based on a model using the negative binomial distribution (1).
+
+1) In inferential testing a distributional assumption is needed because we want to estimate the probability of extreme events just appearing by chance (e.g. large fold change) from limited replicates. The test statistic of ANOVA (or t-test) follows a Student's t distribution, a specific case of the normal distribution. However, counts, as produced in RNA-seq experiments, cannot be normally distributed by definition(you can't have -3 counts, or 12.2 counts). Two distributions for count based data are Poisson, which presumes that the variance and mean are equal, or negative binomial, a.k.a. Gamma-Poisson, which does not. The spread of values among biological replicates is more than given by the one parameter Poisson distribution and it seems to be captured by the two parameter (mean & variance) NB sufficiently well.
+
+2) Information sharing across genes for variance estimation:  
+In order to test the differential expression of a gene, we need to estimate its mean and variance for the underlying negative binomial distribution. Inferential methods that treat each gene separately suffer from the high uncertainty of within-group variance estimates. However, this limitation can be overcome by pooling information across genes, specifically, by exploiting assumptions about the similarity of the variances of different genes measured in the same experiment . DESeq2 detects and corrects dispersion estimates through modeling of the dependence of the dispersion on the average mean over all samples.
+
+The standard differential expression analysis steps are wrapped into a single function, DESeq(). The estimation steps performed by this function are described in the manual page for ?DESeq and in the Methods section of the DESeq2 publication (Love, Huber, and Anders 2014).
+
+This function performs a default analysis through the steps:
+
+  1. Estimation of size factors: estimateSizeFactors
+
+  2. Estimation of dispersion: estimateDispersions
+
+  3. Negative Binomial GLM fitting and Wald statistics: nbinomWaldTest
+
+For complete details on each step, see the manual pages of the respective functions. 
+
+```{r DESeq calculation}
+dds <- DESeq(dds)
+```
+
+
+## 5.4 Normalized counts 
+
+### Normalized count table
+For inspection of the normalized data, we write the normalized counts into a data.frame called "norm_anno".
+
+```{r gene annotation}
+norm_anno_list <- generate_norm_anno(dds_object = dds)
+
+norm_anno <- norm_anno_list$norm_anno
+norm_anno[1:3,c(1:2, (ncol(norm_anno)-5):ncol(norm_anno))]
+
+gene_annotation <- norm_anno_list$gene_annotation
+```
+
+
+Boxplot of normalized samples
+```{r, fig.height=5, fig.width=8}
+boxplot_norm(norm_anno = norm_anno)
+```
+
+
+### Mean normalized expression
+For later visualization we also generate a matrix of mean gene expression values per condition
+```{r}
+norm_mean <- mean_function(input = norm_anno, 
+                           anno = sample_table,
+                           condition = "condition")
+
+```
+
+
+
+## 5.5 Variance stabilizing transformation
+
+In order to test for differential expression, we operate on raw counts and use discrete distributions. However for other downstream analyses - e.g. for visualization or clustering - it might be useful to work with transformed versions of the count data.  
+
+Maybe the most obvious choice of transformation is the logarithm. Since count values for a gene can be zero in some conditions (and non-zero in others), some advocate the use of pseudocounts, i.e. transformations of the form: y=log2(n+n0) where n represents the count values and n0 is a positive constant.
+
+DESeq2 has two alternative approaches that offer more theoretical justification and a rational way of choosing parameters equivalent to n0 above. One makes use of the concept of variance stabilizing transformations (VST) (Tibshirani 1988; Huber et al. 2003; Anders and Huber 2010), and the other is the regularized logarithm or rlog, which incorporates a prior on the sample differences (Love, Huber, and Anders 2014). Both transformations produce transformed data on the log2 scale which has been normalized with respect to library size or other normalization factors.
+
+The point of these two transformations, the VST and the rlog, is to remove the dependence of the variance on the mean, particularly the high variance of the logarithm of count data when the mean is low. Both VST and rlog use the experiment-wide trend of variance over mean, in order to transform the data to remove the experiment-wide trend. Note that we do not require or desire that all the genes have exactly the same variance after transformation. Indeed, in a figure below, you will see that after the transformations the genes with the same mean do not have exactly the same standard deviations, but that the experiment-wide trend has flattened. It is those genes with row variance above the trend which will allow us to cluster samples into interesting groups.
+
+The two functions, vst and rlog have an argument blind, for whether the transformation should be blind to the sample information specified by the design formula. When blind equals TRUE (the default), the functions will re-estimate the dispersions using only an intercept. **This setting should be used in order to compare samples in a manner wholly unbiased by the information about experimental groups, for example to perform sample QA (quality assurance) as demonstrated below.**
+
+However, blind dispersion estimation is not the appropriate choice if one expects that many or the majority of genes (rows) will have large differences in counts which are explainable by the experimental design, and one wishes to transform the data for downstream analysis. In this case, using blind dispersion estimation will lead to large estimates of dispersion, as it attributes differences due to experimental design as unwanted noise, and will result in overly shrinking the transformed values towards each other. By setting blind to FALSE, the dispersions already estimated will be used to perform transformations, or if not present, they will be estimated using the current design formula. Note that only the fitted dispersion estimates from mean-dispersion trend line are used in the transformation (the global dependence of dispersion on mean for the entire experiment). So setting blind to FALSE is still for the most part not using the information about which samples were in which experimental group in applying the transformation.
+
+```{r varStab}
+# Please choose rlog or VST for the transformation: 
+# rlog is recommended for less than 30 samples, vst for more than 30 samples for the sake of computing time
+
+dds_vst <- rlog(dds, blind = TRUE)
+# dds_vst <- vst(dds, blind = TRUE)
+```
+
+
+Plot row standard deviations versus row means
+```{r meanSdPlot, echo=TRUE}
+meanSdPlot(as.matrix(assay(dds_vst)), ranks = FALSE)
+```
+
+
+### Variance stabilized count table
+For visualization of the variance stabilized data, we write the vst log-counts and anti-log coutns into a data frames.
+
+```{r vst matrix}
+# Data frame of log values
+vst_anno_log <- as.data.frame(assay(dds_vst))
+vst_anno_log$GENEID <- rownames(vst_anno_log)
+vst_anno_log <- merge(vst_anno_log, norm_anno[,c("GENEID","SYMBOL","GENETYPE","DESCRIPTION","CHR")], by="GENEID")
+rownames(vst_anno_log) <- vst_anno_log$GENEID
+
+# Data frame of unlog values
+
+vst_anno <- as.data.frame(assay(dds_vst))
+vst_anno <- 2^vst_anno
+vst_anno$GENEID <- rownames(vst_anno)
+vst_anno <- merge(vst_anno, norm_anno[,c("GENEID","SYMBOL","GENETYPE","DESCRIPTION","CHR")], by="GENEID")
+rownames(vst_anno) <- vst_anno$GENEID
+
+vst_anno_log[1:3,c(1:2, (ncol(vst_anno_log)-5):ncol(vst_anno_log))]
+vst_anno[1:3,c(1:2, (ncol(vst_anno)-5):ncol(vst_anno))]
+
+dds_vst_anno <- as.data.frame(assay(dds_vst))
+dds_vst_anno$GENEID <- rownames(dds_vst_anno)
+dds_vst_anno <- merge(dds_vst_anno, norm_anno[,c("GENEID","SYMBOL","GENETYPE","DESCRIPTION","CHR")], by="GENEID")
+rownames(dds_vst_anno) <- dds_vst_anno$GENEID
+```
+
+
+### Mean variance stabilized counts
+For later visualization we also generate a matrix of mean vst gene expression values per condition
+```{r}
+vst_mean <- mean_function(input = vst_anno, 
+                           anno = sample_table,
+                           condition = "condition")
+```
+
+
+
+# 6. Exploratory Data Analysis
+
+Specify sample annotation for plotting
+```{r}
+# choose columns from the sample table for the heatmap annotation
+plot_annotation <- sample_table[ ,c("condition","date"), drop = F]
+rownames(plot_annotation) <- sample_table$ID
+
+# choose columns from the smaple for the heatmap annotation for mean expression
+plot_annotation_mean <- sample_table[ ,c("condition", "date")]
+rownames(plot_annotation_mean) <- NULL
+plot_annotation_mean <- unique(plot_annotation_mean)
+#rownames(plot_annotation_mean) <- plot_annotation_mean$condition
+```
+
+
+## 6.1 Frequencies of gene types
+```{r plot genetypes, fig.height=5, fig.width=10}
+TypeCounts <- as.data.frame(table(norm_anno$GENETYPE))
+colnames(TypeCounts) <- c("Type", "Frequency")
+TypeCounts <- subset(TypeCounts, Frequency>0)
+
+ggplot(TypeCounts, aes(x = Type, y = Frequency, label = Frequency))+
+  geom_bar(stat="identity",fill="grey",colour="grey") +
+  theme_bw()+
+  geom_text(size = 3, position = position_stack(vjust = 1))+
+  guides(fill=FALSE)+
+  theme(text = element_text(size=10),axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))+
+  xlab("")
+```
+
+
+## 6.2 Histogram of of means per gene over all samples
+```{r}
+rMeans <- as.data.frame(log(rowMeans(counts(dds, normalized=TRUE)),10))
+colnames(rMeans) <- "rowMeans"
+ggplot(rMeans, aes(x = rowMeans)) + 
+  geom_histogram(bins=100) +
+  xlab("log10(rowMeans)")+
+  scale_x_continuous(breaks=c(0,1,2,3,4,5,6))+
+  theme_bw()
+```
+
+
+
+## 6.3 Boxplots of highest expressed genes
+
+```{r, fig.height=10}
+highestGenes(numGenes = 50)
+```
+
+
+## 6.4 Hierarchical Clustering of all present genes {.tabset .tabset-fade}
+
+Plot a heatmap of all hierarchically clustered present genes based on normalized expression values.
+
+In case your machine has only 8 gb of ram, plotting a heatmap of all present genes might exceed your memory capacities and give the error: "Error: cannot allocate vector of size XX Gb". In that case, you can either reduce the genes to present based on a higher expression cutoff or continue with the heatmap of variable genes.
+
+
+## 6.5 Hierarchical Clustering of most variable genes {.tabset .tabset-fade}
+
+```{r, echo=TRUE}
+# define variable genes
+rv = genefilter::rowVars(assay(dds_vst))
+q75 = quantile(rowVars(assay(dds_vst)), .75)
+q75_names = names(which(rv > q75))
+```
+
+
+### Sample-wise 
+
+####  clustered Columns & Rows
+```{r, echo=TRUE, message=FALSE, results='hide', fig.height=8, fig.width=12}
+plotHeatmap(geneset = q75_names,
+                title = "Heatmap of most 25% variable genes",
+                show_rownames = FALSE,
+                cluster_cols = TRUE)
+
+```
+
+## 6.8 Principle Component Analysis 
+
+Related to the distance matrix is the PCA plot, which shows the samples in the 2D plane spanned by two principal components. This type of plot is useful for visualizing the overall effect of experimental covariates and batch effects.
+
+Principal component analysis (PCA) simplifies the complexity in high-dimensional data while retaining trends and patterns. It does this by transforming the data into fewer dimensions, which act as summaries of features. High-dimensional data are very common in biology and arise when multiple features, such as expression of many genes, are measured for each sample. This type of data presents several challenges that PCA mitigates: computational expense and an increased error rate due to multiple test correction when testing each feature for association with an outcome. PCA is an unsupervised learning method and is similar to clustering1—it finds patterns without reference to prior knowledge about whether the samples come from different treatment groups or have phenotypic differences.
+
+To understand the basics of PCA, please watch: https://www.youtube.com/watch?v=_UVHneBUBW0
+
+
+### Percentage of explained variance of PCs
+```{r}
+# Extract the eigenvalues/variances of the principal dimensions
+eigenvalue <- get_eig(prcomp(t(assay(dds_vst))))
+eigenvalue$dim <- as.numeric(c(1:nrow(eigenvalue)))
+
+ggplot(eigenvalue, aes(dim, variance.percent))+ 
+  geom_bar(stat = "identity")+
+  geom_line(aes(dim, variance.percent)) +
+  geom_point(aes(dim, variance.percent)) +
+  geom_line(aes(dim, cumulative.variance.percent), colour= "grey") + 
+  geom_point(aes(dim, cumulative.variance.percent), colour= "grey") + 
+  scale_x_continuous(breaks=c(1:nrow(eigenvalue)))+
+  xlab("Dimensions") +
+  ylab("Percentage of explained variances") +
+  theme_bw()
+```
+
+
+### Plot PCA {.tabset .tabset-fade}
+
+#### Condition
+```{r, fig.width=6, fig.height=6}
+plotPCA(ntop = "all", 
+        xPC = 1, 
+        yPC = 2,
+        color = "condition",
+        anno_colour = col_condition,
+        shape = "NULL",
+        point_size = 5,
+        label = NULL,
+        title ="PCA based on variance-stabilized counts")
+
+
+```
+
+
+# 8. Differential Expression Analysis
+
+After the DESeq() function performs the standard differential expression analysis steps, DESeq2's results() function can extract a result table from the DESeqDataSet giving base means across samples, log2 fold changes, standard errors, test statistics, p-values and adjusted p-values.
+
+We have written a function called DEAnalysis() that runs DESeq2's results() and the lfcShrink() function with specified parameters on a set of pre-defined comparisons and returns a single DEresults object containing the respective result tables together with additional lists of the significant DE genes and the number of DE genes found.
+
+The parameters of the DEAnalysis function are: 
+
+  1) condition: specify the condition that you are testing, e.g. treatment or genotype. This value must correspond to the column in the colData listing the factors you are comparing and the design formula. 
+
+  2) alpha:  a significance cutoff used for optimizing the independent filtering.(default= 0.05)
+  
+  3) lfcThreshold: a non-negative value which specifies a log2 fold change threshold. The default value is 0, corresponding to a test that the log2 fold changes are equal to zero. (default = 0)
+  
+  4) sigFC: post testing significance criteria as a non-negative, non-log transformed FC cutoff (default = 2)
+  
+  5) multiple_testing: By default independent hypothesis weighting will be used as the multiple testing method (https://bioconductor.org/packages/3.7/bioc/vignettes/IHW/inst/doc/introduction_to_ihw.html). However, you can also edit the multiple testing method by setting the multiple_testing parameter to "holm", "hochberg", "hommel", "bonferroni", "BH", "BY",or "fdr", which will perform independent filtering and p-value adjustment according to the specified method. (default = "IHW")
+  
+  6) shrinkage: After calculating differential expression statistics, we can perform a so-called log2 fold change shrinkage. This shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes, as it removes the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds. To shrink the LFC, set shrinkage = TRUE to pass the dds object to the function lfcShrink.  (default = TRUE)
+
+  7) shrinkType: The options for the shrinkage type are:
+
+    * "normal" is the the original DESeq2 shrinkage estimator, an adaptive Normal distribution as prior.
+
+    * "apeglm" is the adaptive t prior shrinkage estimator from the apeglm package (Zhu, Ibrahim, and Love 2018). (default)
+
+    * "ashr" is the adaptive shrinkage estimator from the ashr package (Stephens 2016). Here DESeq2 uses the ashr option to fit a mixture of Normal distributions to form the prior, with method="shrinkage".
+
+
+## Define relevant comparisons
+
+Define your comparisons in a data.frame with "comparison" in the first column and "control" in the second column.
+
+comparison | control
+-----------|----------
+tg_4mo     | wt_4mo
+tg_8mo     | wt_8mo
+tg_12mo    | wt_12mo
+
+```{r}
+comparison_table <- data.frame(comparison = c("Duo_normal", "Duo_polyp" , "Duo_polyp"),
+                               control = c("Duo", "Duo","Duo_normal"))
+```
+
+
+## 8.1 Perform Differential Expression Testing
+
+For shrinkage type apeglm:
+
+!!! I am not 100% sure that this loop is correct! Double-check if results make sense by comparing to normal shrinkage type for now!!!
+
+
+
+```{r}
+dds_dea <- dds
+DEresults_list <- list()
+  
+for (i in unique(comparison_table$control)) {
+  dds_dea$condition <- relevel(dds_dea$condition, i)
+  dds_dea <- nbinomWaldTest(object = dds_dea)
+  comparison_table_subset  <-  comparison_table[comparison_table$control == i, ]
+  
+  DEresults <- DEAnalysis(input = dds_dea,
+                          comparison_table = comparison_table_subset,
+                          condition = "condition",
+                          alpha = 0.05 ,
+                          lfcThreshold = 0,
+                          sigFC = 1.5,
+                          multiple_testing = "IHW",
+                          shrinkage = TRUE,
+                          shrinkType = "apeglm")
+  DEresults_list <- c(DEresults_list, DEresults)
+}
+
+DEresults <- DEresults_list[unique(names(DEresults_list))]
+
+```
+
+
+### Summary of DE genes
+
+We use a for loop to print the number of significantly up- and down-regulated genes over all comparisons.
+
+```{r}
+DEcounts <- NULL
+
+for(i in 1:nrow(comparison_table)){
+  tmp <- unlist(DEresults[[1+i]]@Number_DE_genes)
+  DEcounts <- rbind(DEcounts, tmp)
+}
+
+rownames(DEcounts) <- names(DEresults)[-1]
+
+DEcounts
+```
+
+## 8.2 General DE Gene analysis
+
+### Hierarchical Clustering of the union of DE genes 
+
+```{r, echo=TRUE, message=FALSE, results='hide', fig.height=10, fig.width=12}
+# the uDEG() function produces the union of the DE genes from the specified comparisons
+allDEgenes <- uDEG(comparisons = rownames(DEcounts))
+
+plotHeatmap(
+            geneset = allDEgenes,
+            title = "Heatmap of all differentially expressed genes",
+            show_rownames = T,
+            cluster_cols = TRUE)
+```
+
+
+### Volcano Plots
+
+A volcano plot is a type of scatter-plot that is used to quickly identify changes in large data sets composed of replicate data. It plots significance versus fold-change on the y and x axes, respectively. 
+
+```{r}
+# Plot Volcano Plot
+plotVolcano(comparison = "Duo_normal_vs_Duo", labelnum = 10)
+plotVolcano(comparison = "Duo_polyp_vs_Duo", labelnum = 10)
+plotVolcano(comparison = "Duo_polyp_vs_Duo_normal", labelnum = 10)
+```
